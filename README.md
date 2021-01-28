@@ -12,6 +12,8 @@ easier, but doesn't translate well to an existing bot framework. This module
 provides an eventing interface common to some of the other AnyEvent interfaces
 to chat APIs.
 
+This is still likely unfinished, but opening it up to get some more eyes on it.
+
 ## Usage
 
 See [the documentation](doc/AnyEvent-Discord.md).

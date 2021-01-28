@@ -242,6 +242,8 @@ package AnyEvent {
     method _lookup_gateway() {
       my $payload = $self->_discord_api('GET', 'gateway');
       die 'Invalid gateway returned by API' unless ($payload and $payload->{url} and $payload->{url} =~ /^wss/);
+
+      # Add the requested version and encoding to the provided URL
       my $gateway = $payload->{url};
       $gateway .= '/' unless ($gateway =~/\/$/);
       $gateway .= '?v=6&encoding=json';
@@ -311,6 +313,9 @@ package AnyEvent {
     # GUILD_CREATE event
     method _event_guild_create($client, HashRef $data, Num $opcode?) {
       $self->guilds->{$data->{'id'}} = $data->{'name'};
+
+      # We get channel and user information along with the guild, populate those
+      # at the same time
       foreach my $channel (@{$data->{'channels'}}) {
         if ($channel->{'type'} == 0) {
           $self->channels->{$channel->{'id'}} = $channel->{'name'};
@@ -364,7 +369,9 @@ AnyEvent::Discord - Provides an AnyEvent interface to the Discord bot API
  $client->on('ready', sub { warn 'Connected'; });
  $client->on('message_create', sub {
    my ($client, $data) = @_;
-   warn '[' . $client->channels->{$data->{channel_id}} . '] (' . $data->{author}->{username} . ') - ' . $data->{content};
+   warn '[' . $client->channels->{$data->{channel_id}} . ']' .
+        '(' . $data->{author}->{username} . ') - ' .
+        $data->{content};
   });
   $client->connect();
   AnyEvent->condvar->recv;
@@ -374,6 +381,12 @@ AnyEvent::Discord - Provides an AnyEvent interface to the Discord bot API
 This module provides an AnyEvent interface for the Discord API over the REST
 and WebSocket APIs. It is designed to be somewhat similar to the SlackRTM and
 XMPP modules, with a subset of their far more mature functionality.
+
+To get started, one needs to create a new application in the Discord Developer
+Portal (https://discord.com/developers). Once an application is created, a token
+can be captured by navigating to the "Bot" tab on the left side and selecting
+'Click to Reveal Token'. That generated token is the same token required by this
+module.
 
 =head1 CONFIGURATION ACCESSORS
 
@@ -393,8 +406,8 @@ Used to override options to sent to AnyEvent::WebSocket::Client, if needed.
 
 =item verbose (Num) (defaults to 0)
 
-Verbose output, writes internal debug information on 1, writes network messages
-on 2.
+Verbose output, writes internal debug information at 1, additionally writes
+network conversation at 2.
 
 =back
 
@@ -404,15 +417,15 @@ on 2.
 
 =item guilds
 
-Available/created/seen guilds
+Available/created/seen guilds, as a hashmap of id => name
 
 =item channels
 
-Available/created/seen channels
+Available/created/seen channels, as a hashmap of id => name
 
 =item users
 
-Available/created/seen users
+Available/created/seen users, as a hashmap of id => name
 
 =back
 
@@ -511,6 +524,7 @@ Nick Melnick <nmelnick@cpan.org>
 
 This software is copyright (c) 2021, Nick Melnick.
 
-This is free software; you can redistribute it and/or modify it under the same terms as the Perl 5 programming language system itself.
+This is free software; you can redistribute it and/or modify it under the same
+terms as the Perl 5 programming language system itself.
 
 =cut
