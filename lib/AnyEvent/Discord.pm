@@ -11,7 +11,7 @@ class AnyEvent::Discord {
   use HTTP::Request;
   use HTTP::Headers;
 
-  our $VERSION = '0.3';
+  our $VERSION = '0.4';
   has version => ( is => 'ro', isa => Str, default => $VERSION );
 
   has token => ( is => 'rw', isa => Str, required => 1 );
@@ -210,7 +210,7 @@ class AnyEvent::Discord {
   # Send the 'identify' event to the Discord websocket
   method _discord_identify() {
     $self->_debug('Sending identify');
-    $self->_ws_send_payload({
+    $self->_ws_send_payload(AnyEvent::Discord::Payload->from_hashref({
       op => 2,
       d  => {
         token           => $self->token,
@@ -223,7 +223,7 @@ class AnyEvent::Discord {
           '$device'  => $self->user_agent(),
         }
       }
-    });
+    }));
   }
 
   # Send a payload to the Discord websocket
@@ -295,10 +295,10 @@ class AnyEvent::Discord {
         interval => $interval,
         cb       => sub {
           $self->_debug('Heartbeat');
-          $self->_ws_send_payload({
+          $self->_ws_send_payload(AnyEvent::Discord::Payload->from_hashref({
             op => 1,
             d  => $self->_sequence()
-          });
+          }));
         }
       )
     );
