@@ -4,7 +4,7 @@ use warnings;
 package AnyEvent {
   use Zydeco;
 
-  class Discord 0.1 {
+  class Discord 0.2 {
     use Algorithm::Backoff::Exponential;
     use AnyEvent::Discord::Payload;
     use AnyEvent::WebSocket::Client;

@@ -6,6 +6,6 @@ my $client = AnyEvent::Discord->new({ token => '', verbose => ($ENV{'AE_D_VERBOS
 my $version = $client->VERSION;
 
 ok( ($version and length($version) > 0 and $version =~ /\./), 'module has a version' );
-is( $client->user_agent, 'Perl-AnyEventDiscord/0.1', 'default version string intact' );
+is( $client->user_agent, 'Perl-AnyEventDiscord/0.2', 'default version string intact' );
 
 1;
