@@ -5,6 +5,7 @@ package AnyEvent {
   use Zydeco;
 
   class Discord 0.1 {
+    use Algorithm::Backoff::Exponential;
     use AnyEvent::Discord::Payload;
     use AnyEvent::WebSocket::Client;
     use Data::Dumper;
@@ -35,9 +36,11 @@ package AnyEvent {
     # Heartbeat timer
     has _heartbeat ( is => 'rw' );
     # Last Sequence
-    has _sequence ( is => 'rw', isa => Num, default => 0);
+    has _sequence ( is => 'rw', isa => Num, default => 0 );
     # True if caller manually disconnected, to avoid reconnection
     has _force_disconnect ( is => 'rw', isa => Bool, default => 0 );
+    # Host the backoff algorithm for reconnection
+    has _backoff ( is => 'ro', default => sub { Algorithm::Backoff::Exponential->new( initial_delay => 4 ) } );
 
     method _build_internal_events() {
       return {
@@ -111,9 +114,11 @@ package AnyEvent {
           $self->_debug('Received disconnect');
           $self->_handle_internal_event('disconnected');
           unless ($self->_force_disconnect()) {
+            my $seconds = $self->_backoff->failure();
+            $self->_debug('Reconnecting in ' . $seconds);
             my $reconnect;
             $reconnect = AnyEvent->timer(
-              after => 5,
+              after => $seconds,
               cb    => sub {
                 $self->connect();
                 $reconnect = undef;
@@ -152,6 +157,7 @@ package AnyEvent {
 
         $self->_discord_identify();
         $self->_debug('Completed connection sequence');
+        $self->_backoff->success();
       });
     }
 
