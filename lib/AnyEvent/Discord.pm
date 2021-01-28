@@ -1,357 +1,349 @@
 use v5.14;
-use warnings;
+use Moops;
 
-package AnyEvent {
-  use Zydeco;
+class AnyEvent::Discord {
+  use Algorithm::Backoff::Exponential;
+  use AnyEvent::Discord::Payload;
+  use AnyEvent::WebSocket::Client;
+  use Data::Dumper;
+  use JSON qw(decode_json encode_json);
+  use LWP::UserAgent;
+  use HTTP::Request;
+  use HTTP::Headers;
 
-  class Discord 0.2 {
-    use Algorithm::Backoff::Exponential;
-    use AnyEvent::Discord::Payload;
-    use AnyEvent::WebSocket::Client;
-    use Data::Dumper;
-    use JSON qw(decode_json encode_json);
-    use LWP::UserAgent;
-    use HTTP::Request;
-    use HTTP::Headers;
-    use Try::Tiny;
+  our $VERSION = '0.3';
+  has version => ( is => 'ro', isa => Str, default => $VERSION );
 
-    has token! ( isa => Str );
-    has base_uri ( isa => Str ) = 'https://discordapp.com/api';
-    has socket_options ( isa => HashRef, default => sub { { max_payload_size => 1024 * 1024 } } );
-    has verbose ( isa => Num, default => 0 );
-    has user_agent ( isa => Str, default => sub { 'Perl-AnyEventDiscord/' . shift->VERSION } );
+  has token => ( is => 'rw', isa => Str, required => 1 );
+  has base_uri => ( is => 'rw', isa => Str, default => 'https://discordapp.com/api' );
+  has socket_options => ( is => 'rw', isa => HashRef, default => sub { { max_payload_size => 1024 * 1024 } } );
+  has verbose => ( is => 'rw', isa => Num, default => 0 );
+  has user_agent => ( is => 'rw', isa => Str, default => sub { 'Perl-AnyEventDiscord/' . shift->VERSION } );
 
-    has guilds ( is => 'ro', isa => HashRef, default => sub { {} } );
-    has channels ( is => 'ro', isa => HashRef, default => sub { {} } );
-    has users ( is => 'ro', isa => HashRef, default => sub { {} } );
+  has guilds => ( is => 'ro', isa => HashRef, default => sub { {} } );
+  has channels => ( is => 'ro', isa => HashRef, default => sub { {} } );
+  has users => ( is => 'ro', isa => HashRef, default => sub { {} } );
 
-    # UserAgent
-    has _ua ( is => 'rw', default => sub { LWP::UserAgent->new() } );
-    # Caller-defined event handlers
-    has _events ( is => 'ro', isa => HashRef, default => sub { {} } );
-    # Internal-defined event handlers
-    has _internal_events ( is => 'ro', isa => HashRef, builder => '_build_internal_events' );
-    # WebSocket
-    has _socket ( is => 'rw' );
-    # Heartbeat timer
-    has _heartbeat ( is => 'rw' );
-    # Last Sequence
-    has _sequence ( is => 'rw', isa => Num, default => 0 );
-    # True if caller manually disconnected, to avoid reconnection
-    has _force_disconnect ( is => 'rw', isa => Bool, default => 0 );
-    # Host the backoff algorithm for reconnection
-    has _backoff ( is => 'ro', default => sub { Algorithm::Backoff::Exponential->new( initial_delay => 4 ) } );
+  # UserAgent
+  has _ua => ( is => 'rw', default => sub { LWP::UserAgent->new() } );
+  # Caller-defined event handlers
+  has _events => ( is => 'ro', isa => HashRef, default => sub { {} } );
+  # Internal-defined event handlers
+  has _internal_events => ( is => 'ro', isa => HashRef, builder => '_build_internal_events' );
+  # WebSocket
+  has _socket => ( is => 'rw' );
+  # Heartbeat timer
+  has _heartbeat => ( is => 'rw' );
+  # Last Sequence
+  has _sequence => ( is => 'rw', isa => Num, default => 0 );
+  # True if caller manually disconnected, to avoid reconnection
+  has _force_disconnect => ( is => 'rw', isa => Bool, default => 0 );
+  # Host the backoff algorithm for reconnection
+  has _backoff => ( is => 'ro', default => sub { Algorithm::Backoff::Exponential->new( initial_delay => 4 ) } );
 
-    method _build_internal_events() {
-      return {
-        'guild_create' => [sub { $self->_event_guild_create(@_); }],
-        'guild_delete' => [sub { $self->_event_guild_delete(@_); }],
-        'channel_create' => [sub { $self->_event_channel_create(@_); }],
-        'channel_delete' => [sub { $self->_event_channel_delete(@_); }],
-        'guild_member_create' => [sub { $self->_event_guild_member_create(@_); }],
-        'guild_member_remove' => [sub { $self->_event_guild_member_remove(@_); }]
-      };
-    }
+  method _build_internal_events() {
+    return {
+      'guild_create' => [sub { $self->_event_guild_create(@_); }],
+      'guild_delete' => [sub { $self->_event_guild_delete(@_); }],
+      'channel_create' => [sub { $self->_event_channel_create(@_); }],
+      'channel_delete' => [sub { $self->_event_channel_delete(@_); }],
+      'guild_member_create' => [sub { $self->_event_guild_member_create(@_); }],
+      'guild_member_remove' => [sub { $self->_event_guild_member_remove(@_); }]
+    };
+  }
 
-    method on(Str $event_type, CodeRef $handler) {
-      $event_type = lc($event_type);
-      $self->_debug('Requesting attach of handler ' . $handler . ' to event ' . $event_type);
+  method on(Str $event_type, CodeRef $handler) {
+    $event_type = lc($event_type);
+    $self->_debug('Requesting attach of handler ' . $handler . ' to event ' . $event_type);
 
-      $self->_events->{$event_type} //= [];
-      return if (scalar(grep { $_ eq $handler } @{$self->_events->{$event_type}}) > 0);
+    $self->_events->{$event_type} //= [];
+    return if (scalar(grep { $_ eq $handler } @{$self->_events->{$event_type}}) > 0);
 
-      $self->_debug('Attaching handler ' . $handler . ' to event ' . $event_type);
-      push( @{$self->_events->{$event_type}}, $handler );
-    }
+    $self->_debug('Attaching handler ' . $handler . ' to event ' . $event_type);
+    push( @{$self->_events->{$event_type}}, $handler );
+  }
 
-    method off(Str $event_type, CodeRef $handler?) {
-      $event_type = lc($event_type);
-      $self->_debug('Requesting detach of handler ' . ($handler or 'n/a') . ' from event ' . $event_type);
-      if ($self->_events->{$event_type}) {
-        if ($handler) {
-          my $index = 0;
-          while ($index < scalar(@{$self->_events->{$event_type}})) {
-            if ($self->_events->{$event_type}->[$index] eq $handler) {
-              $self->_debug('Detaching handler ' . $handler . ' from event ' . $event_type);
-              splice( @{$self->_events->{$event_type}}, $index, 1 );
-            }
-            $index++;
+  method off(Str $event_type, CodeRef $handler?) {
+    $event_type = lc($event_type);
+    $self->_debug('Requesting detach of handler ' . ($handler or 'n/a') . ' from event ' . $event_type);
+    if ($self->_events->{$event_type}) {
+      if ($handler) {
+        my $index = 0;
+        while ($index < scalar(@{$self->_events->{$event_type}})) {
+          if ($self->_events->{$event_type}->[$index] eq $handler) {
+            $self->_debug('Detaching handler ' . $handler . ' from event ' . $event_type);
+            splice( @{$self->_events->{$event_type}}, $index, 1 );
           }
-        } else {
-          $self->_debug('Detaching ' . scalar(@{$self->_events->{$event_type}}) . ' handler(s) from event ' . $event_type);
-          delete($self->_events->{$event_type});
+          $index++;
         }
+      } else {
+        $self->_debug('Detaching ' . scalar(@{$self->_events->{$event_type}}) . ' handler(s) from event ' . $event_type);
+        delete($self->_events->{$event_type});
       }
-    }
-
-    method connect() {
-      my $gateway = $self->_lookup_gateway();
-
-      $self->_debug('Connecting to ' . $gateway);
-
-      my $ws = AnyEvent::WebSocket::Client->new($self->socket_options);
-      $ws->connect($gateway)->cb(sub {
-        my $socket = eval { shift->recv };
-        if ($@) {
-          $self->_debug('Received error connecting: ' . $@);
-          $self->_handle_internal_event('error', $@);
-          return;
-        }
-        $self->_debug('Connected to ' . $gateway);
-
-        $self->_socket($socket);
-    
-        # If we send malformed content, bail out
-        $socket->on('parse_error', sub {
-          my ($c, $error) = @_;
-          $self->_debug(Data::Dumper::Dumper($error));
-          die $error;
-        });
-
-        # Handle reconnection
-        $socket->on('finish', sub {
-          my ($c) = @_;
-          $self->_debug('Received disconnect');
-          $self->_handle_internal_event('disconnected');
-          unless ($self->_force_disconnect()) {
-            my $seconds = $self->_backoff->failure();
-            $self->_debug('Reconnecting in ' . $seconds);
-            my $reconnect;
-            $reconnect = AnyEvent->timer(
-              after => $seconds,
-              cb    => sub {
-                $self->connect();
-                $reconnect = undef;
-              }
-            );
-          }
-        });
-
-        # Event handler
-        $socket->on('each_message', sub {
-          my ($c, $message) = @_;
-          $self->_trace('ws in: ' . $message->{'body'});
-          my $payload;
-          try {
-            $payload = $self->_payload($message->{'body'});
-          } catch {
-            $self->_debug($_);
-            return;
-          }
-          unless ($payload and defined $payload->op) {
-            $self->_debug('Invalid payload received from Discord: ' . $message->{'body'});
-            return;
-          }
-          $self->_sequence(0 + $payload->s) if ($payload->s and $payload->s > 0);
-
-          if ($payload->op == 10) {
-            $self->_event_hello($payload);
-          } elsif ($payload->d) {
-            if ($payload->d->{'author'}) {
-              my $user = $payload->d->{'author'};
-              $self->users->{$user->{'id'}} = $user->{'username'};
-            }
-            $self->_handle_event($payload);
-          }
-        });
-
-        $self->_discord_identify();
-        $self->_debug('Completed connection sequence');
-        $self->_backoff->success();
-      });
-    }
-
-    method send($channel_id, $content) {
-      $self->_discord_api('POST', 'channels/' . $channel_id . '/messages', encode_json({content => $content}));
-    }
-
-    method typing($channel_id) {
-      return AnyEvent->timer(
-        after    => 0,
-        interval => 5,
-        cb       => sub {
-          $self->_discord_api('POST', 'channels/' . $channel_id . '/typing');
-        },
-      );
-    }
-
-    method close() {
-      $self->_force_disconnect(1);
-      $self->{'_heartbeat'} = undef;
-      $self->{'_sequence'} = 0;
-      $self->_socket->close();
-    }
-
-    # Make an HTTP request to the Discord API
-    method _discord_api(Str $method, Str $path, $payload?) {
-      my $headers = HTTP::Headers->new(
-        Authorization => 'Bot ' . $self->token,
-        User_Agent    => $self->user_agent,
-        Content_Type  => 'application/json',
-      );
-      my $request = HTTP::Request->new(
-        uc($method),
-        join('/', $self->base_uri, $path),
-        $headers,
-        $payload,
-      );
-      $self->_trace('api req: ' . $request->as_string());
-      my $res = $self->_ua->request($request);
-      $self->_trace('api res: ' . $res->as_string());
-      if ($res->is_success()) {
-        if ($res->header('Content-Type') eq 'application/json') {
-          return decode_json($res->decoded_content());
-        } else {
-          return $res->decoded_content();
-        }
-      }
-      return;
-    }
-
-    # Send the 'identify' event to the Discord websocket
-    method _discord_identify() {
-      $self->_debug('Sending identify');
-      $self->_ws_send_payload({
-        op => 2,
-        d  => {
-          token           => $self->token,
-          compress        => JSON::false,
-          large_threshold => 250,
-          shard           => [0, 1],
-          properties => {
-            '$os'      => 'linux',
-            '$browser' => $self->user_agent(),
-            '$device'  => $self->user_agent(),
-          }
-        }
-      });
-    }
-
-    # Send a payload to the Discord websocket
-    method _ws_send_payload(Payload $payload) {
-      unless ($self->_socket) {
-        $self->_debug('Attempted to send payload to disconnected socket');
-        return;
-      }
-      my $msg = $payload->as_json;
-      $self->_trace('ws out: ' . $msg);
-      $self->_socket->send($msg);
-    }
-
-    # Look up the gateway endpoint using the Discord API
-    method _lookup_gateway() {
-      my $payload = $self->_discord_api('GET', 'gateway');
-      die 'Invalid gateway returned by API' unless ($payload and $payload->{url} and $payload->{url} =~ /^wss/);
-
-      # Add the requested version and encoding to the provided URL
-      my $gateway = $payload->{url};
-      $gateway .= '/' unless ($gateway =~/\/$/);
-      $gateway .= '?v=6&encoding=json';
-      return $gateway;
-    }
-
-    # Dispatch an internal event type
-    method _handle_internal_event(Str $type) {
-      foreach my $event_source (qw(_internal_events _events)) {
-        if ($self->{$event_source}->{$type}) {
-          map {
-            $self->_debug('Sending ' . ( $event_source =~ /internal/ ? 'internal' : 'caller' ) . ' event ' . $type);
-            $_->($self);
-          } @{ $self->{$event_source}->{$type} };
-        }
-      }
-    }
-
-    # Dispatch a Discord event type
-    method _handle_event(Payload $payload) {
-      my $type = lc($payload->t);
-      $self->_debug('Got event ' . $type);
-      foreach my $event_source (qw(_internal_events _events)) {
-        if ($self->{$event_source}->{$type}) {
-          map {
-            $self->_debug('Sending ' . ( $event_source =~ /internal/ ? 'internal' : 'caller' ) . ' event ' . $type);
-            $_->($self, $payload->d, $payload->op);
-          } @{ $self->{$event_source}->{$type} };
-        }
-      }
-    }
-
-    # Return a Payload for either JSON or Payload content
-    method _payload(Payload $payload) {
-      return $payload;
-    }
-
-    # Send debug messages to console if verbose is >=1
-    method _debug(Str $message) {
-      say $message if ($self->verbose);
-    }
-
-    # Send trace messages to console if verbose is 2
-    method _trace(Str $message) {
-      say $message if ($self->verbose == 2);
-    }
-
-    # Called when Discord provides the 'hello' event
-    method _event_hello(Payload $payload) {
-      $self->_debug('Received hello event');
-      my $interval = $payload->d->{'heartbeat_interval'}/1e3;
-      $self->_heartbeat(
-        AnyEvent->timer(
-          after    => $interval,
-          interval => $interval,
-          cb       => sub {
-            $self->_debug('Heartbeat');
-            $self->_ws_send_payload({
-              op => 1,
-              d  => $self->_sequence()
-            });
-          }
-        )
-      );
-    }
-
-    # GUILD_CREATE event
-    method _event_guild_create($client, HashRef $data, Num $opcode?) {
-      $self->guilds->{$data->{'id'}} = $data->{'name'};
-
-      # We get channel and user information along with the guild, populate those
-      # at the same time
-      foreach my $channel (@{$data->{'channels'}}) {
-        if ($channel->{'type'} == 0) {
-          $self->channels->{$channel->{'id'}} = $channel->{'name'};
-        }
-      }
-      foreach my $user (@{$data->{'members'}}) {
-        $self->users->{$user->{'user'}->{'id'}} = $user->{'user'}->{'username'};
-      }
-    }
-
-    # GUILD_DELETE event
-    method _event_guild_delete($client, HashRef $data, Num $opcode?) {
-      delete($self->guilds->{$data->{'id'}});
-    }
-
-    # CHANNEL_CREATE event
-    method _event_channel_create($client, HashRef $data, Num $opcode?) {
-      $self->channels->{$data->{'id'}} = $data->{'name'};
-    }
-
-    # CHANNEL_DELETE event
-    method _event_channel_delete($client, HashRef $data, Num $opcode?) {
-      delete($self->channels->{$data->{'id'}});
-    }
-
-    # GUILD_MEMBER_CREATE event
-    method _event_guild_member_create($client, HashRef $data, Num $opcode?) {
-      $self->users->{$data->{'id'}} = $data->{'username'};
-    }
-
-    # GUILD_MEMBER_REMOVE event
-    method _event_guild_member_remove($client, HashRef $data, Num $opcode?) {
-      delete($self->users->{$data->{'id'}});
     }
   }
 
+  method connect() {
+    my $gateway = $self->_lookup_gateway();
+
+    $self->_debug('Connecting to ' . $gateway);
+
+    my $ws = AnyEvent::WebSocket::Client->new($self->socket_options);
+    $ws->connect($gateway)->cb(sub {
+      my $socket = eval { shift->recv };
+      if ($@) {
+        $self->_debug('Received error connecting: ' . $@);
+        $self->_handle_internal_event('error', $@);
+        return;
+      }
+      $self->_debug('Connected to ' . $gateway);
+
+      $self->_socket($socket);
+  
+      # If we send malformed content, bail out
+      $socket->on('parse_error', sub {
+        my ($c, $error) = @_;
+        $self->_debug(Data::Dumper::Dumper($error));
+        die $error;
+      });
+
+      # Handle reconnection
+      $socket->on('finish', sub {
+        my ($c) = @_;
+        $self->_debug('Received disconnect');
+        $self->_handle_internal_event('disconnected');
+        unless ($self->_force_disconnect()) {
+          my $seconds = $self->_backoff->failure();
+          $self->_debug('Reconnecting in ' . $seconds);
+          my $reconnect;
+          $reconnect = AnyEvent->timer(
+            after => $seconds,
+            cb    => sub {
+              $self->connect();
+              $reconnect = undef;
+            }
+          );
+        }
+      });
+
+      # Event handler
+      $socket->on('each_message', sub {
+        my ($c, $message) = @_;
+        $self->_trace('ws in: ' . $message->{'body'});
+        my $payload;
+        try {
+          $payload = AnyEvent::Discord::Payload->from_json($message->{'body'});
+        } catch {
+          $self->_debug($_);
+          return;
+        };
+        unless ($payload and defined $payload->op) {
+          $self->_debug('Invalid payload received from Discord: ' . $message->{'body'});
+          return;
+        }
+        $self->_sequence(0 + $payload->s) if ($payload->s and $payload->s > 0);
+
+        if ($payload->op == 10) {
+          $self->_event_hello($payload);
+        } elsif ($payload->d) {
+          if ($payload->d->{'author'}) {
+            my $user = $payload->d->{'author'};
+            $self->users->{$user->{'id'}} = $user->{'username'};
+          }
+          $self->_handle_event($payload);
+        }
+      });
+
+      $self->_discord_identify();
+      $self->_debug('Completed connection sequence');
+      $self->_backoff->success();
+    });
+  }
+
+  method send($channel_id, $content) {
+    $self->_discord_api('POST', 'channels/' . $channel_id . '/messages', encode_json({content => $content}));
+  }
+
+  method typing($channel_id) {
+    return AnyEvent->timer(
+      after    => 0,
+      interval => 5,
+      cb       => sub {
+        $self->_discord_api('POST', 'channels/' . $channel_id . '/typing');
+      },
+    );
+  }
+
+  method close() {
+    $self->_force_disconnect(1);
+    $self->{'_heartbeat'} = undef;
+    $self->{'_sequence'} = 0;
+    $self->_socket->close();
+  }
+
+  # Make an HTTP request to the Discord API
+  method _discord_api(Str $method, Str $path, $payload?) {
+    my $headers = HTTP::Headers->new(
+      Authorization => 'Bot ' . $self->token,
+      User_Agent    => $self->user_agent,
+      Content_Type  => 'application/json',
+    );
+    my $request = HTTP::Request->new(
+      uc($method),
+      join('/', $self->base_uri, $path),
+      $headers,
+      $payload,
+    );
+    $self->_trace('api req: ' . $request->as_string());
+    my $res = $self->_ua->request($request);
+    $self->_trace('api res: ' . $res->as_string());
+    if ($res->is_success()) {
+      if ($res->header('Content-Type') eq 'application/json') {
+        return decode_json($res->decoded_content());
+      } else {
+        return $res->decoded_content();
+      }
+    }
+    return;
+  }
+
+  # Send the 'identify' event to the Discord websocket
+  method _discord_identify() {
+    $self->_debug('Sending identify');
+    $self->_ws_send_payload({
+      op => 2,
+      d  => {
+        token           => $self->token,
+        compress        => JSON::false,
+        large_threshold => 250,
+        shard           => [0, 1],
+        properties => {
+          '$os'      => 'linux',
+          '$browser' => $self->user_agent(),
+          '$device'  => $self->user_agent(),
+        }
+      }
+    });
+  }
+
+  # Send a payload to the Discord websocket
+  method _ws_send_payload(AnyEvent::Discord::Payload $payload) {
+    unless ($self->_socket) {
+      $self->_debug('Attempted to send payload to disconnected socket');
+      return;
+    }
+    my $msg = $payload->as_json;
+    $self->_trace('ws out: ' . $msg);
+    $self->_socket->send($msg);
+  }
+
+  # Look up the gateway endpoint using the Discord API
+  method _lookup_gateway() {
+    my $payload = $self->_discord_api('GET', 'gateway');
+    die 'Invalid gateway returned by API' unless ($payload and $payload->{url} and $payload->{url} =~ /^wss/);
+
+    # Add the requested version and encoding to the provided URL
+    my $gateway = $payload->{url};
+    $gateway .= '/' unless ($gateway =~/\/$/);
+    $gateway .= '?v=6&encoding=json';
+    return $gateway;
+  }
+
+  # Dispatch an internal event type
+  method _handle_internal_event(Str $type) {
+    foreach my $event_source (qw(_internal_events _events)) {
+      if ($self->{$event_source}->{$type}) {
+        map {
+          $self->_debug('Sending ' . ( $event_source =~ /internal/ ? 'internal' : 'caller' ) . ' event ' . $type);
+          $_->($self);
+        } @{ $self->{$event_source}->{$type} };
+      }
+    }
+  }
+
+  # Dispatch a Discord event type
+  method _handle_event(AnyEvent::Discord::Payload $payload) {
+    my $type = lc($payload->t);
+    $self->_debug('Got event ' . $type);
+    foreach my $event_source (qw(_internal_events _events)) {
+      if ($self->{$event_source}->{$type}) {
+        map {
+          $self->_debug('Sending ' . ( $event_source =~ /internal/ ? 'internal' : 'caller' ) . ' event ' . $type);
+          $_->($self, $payload->d, $payload->op);
+        } @{ $self->{$event_source}->{$type} };
+      }
+    }
+  }
+
+  # Send debug messages to console if verbose is >=1
+  method _debug(Str $message) {
+    say $message if ($self->verbose);
+  }
+
+  # Send trace messages to console if verbose is 2
+  method _trace(Str $message) {
+    say $message if ($self->verbose == 2);
+  }
+
+  # Called when Discord provides the 'hello' event
+  method _event_hello(AnyEvent::Discord::Payload $payload) {
+    $self->_debug('Received hello event');
+    my $interval = $payload->d->{'heartbeat_interval'}/1e3;
+    $self->_heartbeat(
+      AnyEvent->timer(
+        after    => $interval,
+        interval => $interval,
+        cb       => sub {
+          $self->_debug('Heartbeat');
+          $self->_ws_send_payload({
+            op => 1,
+            d  => $self->_sequence()
+          });
+        }
+      )
+    );
+  }
+
+  # GUILD_CREATE event
+  method _event_guild_create($client, HashRef $data, Num $opcode?) {
+    $self->guilds->{$data->{'id'}} = $data->{'name'};
+
+    # We get channel and user information along with the guild, populate those
+    # at the same time
+    foreach my $channel (@{$data->{'channels'}}) {
+      if ($channel->{'type'} == 0) {
+        $self->channels->{$channel->{'id'}} = $channel->{'name'};
+      }
+    }
+    foreach my $user (@{$data->{'members'}}) {
+      $self->users->{$user->{'user'}->{'id'}} = $user->{'user'}->{'username'};
+    }
+  }
+
+  # GUILD_DELETE event
+  method _event_guild_delete($client, HashRef $data, Num $opcode?) {
+    delete($self->guilds->{$data->{'id'}});
+  }
+
+  # CHANNEL_CREATE event
+  method _event_channel_create($client, HashRef $data, Num $opcode?) {
+    $self->channels->{$data->{'id'}} = $data->{'name'};
+  }
+
+  # CHANNEL_DELETE event
+  method _event_channel_delete($client, HashRef $data, Num $opcode?) {
+    delete($self->channels->{$data->{'id'}});
+  }
+
+  # GUILD_MEMBER_CREATE event
+  method _event_guild_member_create($client, HashRef $data, Num $opcode?) {
+    $self->users->{$data->{'id'}} = $data->{'username'};
+  }
+
+  # GUILD_MEMBER_REMOVE event
+  method _event_guild_member_remove($client, HashRef $data, Num $opcode?) {
+    delete($self->users->{$data->{'id'}});
+  }
 }
 
 1;

@@ -1,39 +1,31 @@
 use v5.14;
-use warnings;
+use Moops;
 
-package AnyEvent::Discord {
-  use Zydeco;
+class AnyEvent::Discord::Payload {
+  use JSON qw(decode_json encode_json);
 
-  class Payload {
-    use JSON qw(decode_json encode_json);
+  our $VERSION = '0.1';
+  has version => ( is => 'ro', isa => Str, default => $VERSION );
 
-    type_name Payload;
+  has op => ( is => 'rw', isa => Num );
+  has d => ( is => 'rw' );
+  has s => ( is => 'rw' );
+  has t => ( is => 'rw' );
 
-    has op ( isa => Num );
-    has d;
-    has s;
-    has t;
-
-    coerce from Str via from_json;
-
-    method from_json(Str $json) {
-      $class->new(decode_json($json));
-    }
-
-    coerce from HashRef via from_hashref;
-
-    method from_hashref(HashRef $ref) {
-      $class->new($ref);
-    }
-
-    method as_json() {
-      return encode_json({
-        op => $self->op,
-        d  => $self->d,
-      });
-    }
+  method from_json($class: Str $json) {
+    $class->new(decode_json($json));
   }
 
+  method from_hashref($class: HashRef $ref) {
+    $class->new($ref);
+  }
+
+  method as_json() {
+    return encode_json({
+      op => $self->op,
+      d  => $self->d,
+    });
+  }
 }
 
 1;
