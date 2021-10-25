@@ -164,7 +164,7 @@ class AnyEvent::Discord 0.7 {
   }
 
   method send($channel_id, $content) {
-    $self->_discord_api('POST', 'channels/' . $channel_id . '/messages', encode_json({content => $content}));
+    return $self->_discord_api('POST', 'channels/' . $channel_id . '/messages', encode_json({content => $content}));
   }
 
   method typing($channel_id) {
@@ -450,6 +450,8 @@ Discord event types: https://discord.com/developers/docs/topics/gateway#list-of-
 Opcodes: https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-opcodes
 
 These events receive the parameters client, data object (d) and the opcode (op).
+The $client variable is this instance of AnyEvent::Discord, and the contents of
+$data and $op are dependent on the event type.
 
   sub event_responder {
     my ($client, $data, $opcode) = @_;
