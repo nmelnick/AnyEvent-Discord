@@ -1,4 +1,4 @@
-use v5.14;
+use v5.20;
 use Moops;
 
 class AnyEvent::Discord::Payload {
@@ -68,7 +68,7 @@ Nick Melnick <nmelnick@cpan.org>
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2021, Nick Melnick.
+This software is copyright (c) 2023, Nick Melnick.
 
 This is free software; you can redistribute it and/or modify it under the same terms as the Perl 5 programming language system itself.
 
